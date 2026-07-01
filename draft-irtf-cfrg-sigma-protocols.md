@@ -216,7 +216,7 @@ All Sigma protocols in this document are instances of a single protocol: a proof
 
 For prime-order groups, `H1` is the set of witnesses `[Scalar; num_scalars]` under component-wise addition, and `H2` is the set of images `[Group; num_images]` under component-wise addition. The homomorphism `psi` is then a linear map from scalars to group elements (see {{morphism}}), and Schnorr, DLEQ, and Pedersen proofs differ only in the choice of `psi` and `image` (see the examples below).
 
-The `image` is not supplied directly: it is computed from the instance `X` by a function `f`, as `image = f(X)`. Keeping `f` separate from `psi` cleanly divides the fixed structure of the proof (`psi`, built only from public parameters) from the values a malicious prover might try to choose or alter after the fact (the instance `X`). It also makes explicit that the challenge must be bound to the instance `X`, the input of `f`, and never to the image `f(X)`, which need not determine `X` uniquely (see {{security-considerations}}).
+The `image` is not supplied directly: it is computed from the instance `X` by a function `f`, as `image = f(X)`. Keeping `f` separate from `psi` cleanly divides the fixed structure of the proof (`psi`, built only from public parameters) from the values a malicious prover might try to choose or alter after the fact (the instance `X`). Because `f` need not be injective and need not be fully pinned down by the protocol identifier, the challenge must be bound to both the instance `X` (the input of `f`) and the image `f(X)` (its output); binding only one of the two is insecure (see {{binding}}).
 
 ### Core protocol
 
@@ -316,7 +316,7 @@ A **statement** is the public description of what is being proven. It carries th
         num_scalars: int
         psi                           # function: [Scalar; num_scalars] -> [Group; num_images]
         f                             # function: instance -> [Group; num_images]
-        instance: list[Group]         # the public statement X
+        instance: list[Group | Scalar]   # the public statement X
 
         @property
         def image(self):
@@ -334,7 +334,7 @@ To define a Sigma proof, a developer specifies five objects, in plain form, with
 
 1. the **public parameters**: the fixed group elements (and scalars) that `psi` uses as coefficients, such as generators;
 2. the **witness**: a list of `num_scalars` scalars, the secret preimage;
-3. the **instance**: a list of group elements, the public statement `X`;
+3. the **instance**: an ordered list of group elements and/or scalars, the public statement `X`. Whether each position is a group element or a scalar is fixed by the statement, so both parties know the layout;
 4. the **homomorphism** `psi`: a function of the witness, using only the public parameters and the instance;
 5. the **image function** `f`: a function of the instance, returning `[Group; num_images]`.
 
@@ -356,7 +356,9 @@ Group elements and scalars are serialized with the canonical, fixed-length encod
 - `deserialize_commitment(self, data)` reads exactly `num_images` group elements from `data` using `Group.deserialize`, and raises `DeserializeError` if the length is not `Ne * num_images` or any element is invalid.
 - `deserialize_response(self, data)` reads exactly `num_scalars` scalars from `data` using `ScalarField.deserialize`, and raises `DeserializeError` if the length is not `Ns * num_scalars` or any scalar is invalid.
 
-The instance is serialized the same way, as `Group.serialize(instance)` in list order. This canonical encoding is the value that MUST be bound by the Fiat-Shamir challenge (see {{security-considerations}}). Note that the instance, not the image `f(instance)`, is the value serialized and bound.
+The instance is serialized in list order, each position with the canonical fixed-length encoding of its type: group elements with `Group.serialize` and scalars with `ScalarField.serialize`. The image `f(instance)`, a list of `num_images` group elements, is serialized with `Group.serialize`.
+
+Both the instance `X` **and** the image `f(instance)` MUST be bound by the Fiat-Shamir challenge (see {{binding}}), together with the protocol identifier. Neither alone is sufficient: binding only `X` fails to pin `f`, and binding only `f(X)` fails to pin `X`.
 
 ### Example: Schnorr proofs
 
@@ -454,7 +456,17 @@ A Sigma proof defined as in {{statements}} is only as sound and zero-knowledge a
 
 - **The instance MUST NOT contain private values.** Anything secret belongs in the witness; the instance is public and revealed to the verifier.
 
-- **The challenge MUST be bound to the instance `X`, the input of `f`, and never to the image `f(X)`.** Since `f` need not be injective, two distinct instances `X != X'` may satisfy `f(X) == f(X')`. If only the image were bound, a malicious prover could produce a proof for `X` and later present it as a proof for a different instance `X'` with the same image. Binding the instance itself closes this substitution. The Fiat-Shamir transformation {{fiat-shamir}} MUST therefore absorb the instance, together with the public parameters and the homomorphism `psi`, when deriving the challenge.
+- **The challenge MUST be bound to both the instance `X` and the image `f(X)`.** The Fiat-Shamir transformation {{fiat-shamir}} MUST absorb the serialization of `X` and of `f(X)`, together with the protocol identifier, before deriving the challenge. Binding only one of the two is insecure; the reasoning is given in {{binding}}.
+
+## Binding the instance and the image {#binding}
+
+The verifier's equation, `psi(response) == commitment + challenge * f(X)`, involves the image `f(X)`, which is computed from the instance `X`. For the non-interactive proof to be sound, every value in this equation that a prover could influence MUST be fixed before the challenge is derived. This means binding **both** `X` (the input of `f`) and `f(X)` (its output). Each guards against a different attack, and neither is redundant.
+
+**Binding `X` is necessary because `f` need not be injective.** Two distinct instances `X != X'` may satisfy `f(X) == f(X')`. If only the image `f(X)` were bound, a malicious prover could produce a proof for `X` and later present the very same proof as a proof for a different instance `X'` with the same image. Binding `X` itself closes this substitution.
+
+**Binding `f(X)` is necessary because `f` may not be pinned down by the protocol identifier.** If only `X` were bound, a malicious prover could fix a commitment, obtain the challenge (which depends on `X` but not on the image), pick an arbitrary response, and then solve the verifier's equation for the image it needs, namely `f(X) = challenge^{-1} * (psi(response) - commitment)`. If the prover controls `f` — for example, `f` embeds constants that are chosen at deployment time, or `f` is otherwise not uniquely determined by the protocol identifier — it can then choose those constants so that `f(X)` equals the required value, yielding a proof that verifies for a statement the prover never had a witness for. Binding `f(X)` makes the challenge depend on the image, so it cannot be chosen after the fact.
+
+In effect, `f` is part of the statement: its constants are as much a part of what is being proven as the instance. Binding the output `f(X)` captures the net effect of `f` and all constants embedded in it, without requiring implementers to serialize `f` itself or enumerate those constants — which would be error-prone and easy to forget. This is why this document mandates absorbing the image `f(X)` in addition to the instance `X`.
 
 ## Privacy Considerations
 
