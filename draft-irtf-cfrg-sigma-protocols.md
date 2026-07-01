@@ -340,6 +340,24 @@ To define a Sigma proof, a developer specifies five objects, in plain form, with
 
 In most protocols the instance is already the image, so `f` is the identity function. `f` becomes non-trivial when the value that `psi` must reach is a public function of several instance elements (see {{security-considerations}} for the requirements `psi` and `f` must satisfy).
 
+### Ordering and serialization {#ordering}
+
+The witness, instance, image, commitment, and response are **ordered** lists, and their ordering is significant. It is fixed by the definition of the statement and MUST be identical for the prover and the verifier:
+
+- component `i` of the commitment corresponds to output `i` of `psi` and to component `i` of the image `f(instance)`;
+- component `j` of the response corresponds to scalar `j` of the witness.
+
+Reordering any of these lists produces a different statement and a proof that will not verify against the original. Because the ordering is part of the statement, it MUST also be reflected in the protocol identifier ({{protocol-id-generation}}) and instance identifier ({{instance-id-generation}}).
+
+Group elements and scalars are serialized with the canonical, fixed-length encodings of {{group}}, concatenated in list order. Concretely, for `SchnorrProof`:
+
+- `serialize_commitment(self, commitment) = self.statement.Group.serialize(commitment)`, producing `Ne * num_images` bytes.
+- `serialize_response(self, response) = self.statement.Group.ScalarField.serialize(response)`, producing `Ns * num_scalars` bytes.
+- `deserialize_commitment(self, data)` reads exactly `num_images` group elements from `data` using `Group.deserialize`, and raises `DeserializeError` if the length is not `Ne * num_images` or any element is invalid.
+- `deserialize_response(self, data)` reads exactly `num_scalars` scalars from `data` using `ScalarField.deserialize`, and raises `DeserializeError` if the length is not `Ns * num_scalars` or any scalar is invalid.
+
+The instance is serialized the same way, as `Group.serialize(instance)` in list order. This canonical encoding is the value that MUST be bound by the Fiat-Shamir challenge (see {{security-considerations}}). Note that the instance, not the image `f(instance)`, is the value serialized and bound.
+
 ### Example: Schnorr proofs
 
 The Schnorr proof of knowledge of a discrete logarithm,
