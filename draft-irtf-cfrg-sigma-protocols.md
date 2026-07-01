@@ -72,7 +72,7 @@ informative:
       -
         fullname: Dan Boneh
       -
-        fullname: Victor Schoup
+        fullname: Victor Shoup
   Stern93:
     title: "A New Identification Scheme Based on Syndrome Decoding"
     target: https://link.springer.com/chapter/10.1007/3-540-48329-2_2
@@ -85,10 +85,16 @@ informative:
         - fullname: "Jan Camenisch"
         - fullname: "Markus Stadler"
       target: https://crypto.ethz.ch/publications/files/CamSta97b.pdf
+  Maurer09:
+      title: "Unifying Zero-Knowledge Proofs of Knowledge"
+      author:
+        - fullname: "Ueli Maurer"
+      target: https://crypto.ethz.ch/publications/files/Maurer09.pdf
+      date: 2009
 
 --- abstract
 
-This document describes interactive Sigma Protocols, a class of secure, general-purpose zero-knowledge proofs of knowledge consisting of three moves: commitment, challenge, and response. Concretely, the protocol allows one to prove knowledge of a secret witness without revealing any information about it.
+This document describes interactive Sigma Protocols, a class of secure, general-purpose zero-knowledge proofs of knowledge consisting of three moves: commitment, challenge, and response. Concretely, the protocol allows one to prove knowledge of a secret witness without revealing any information about it. All protocols in this document are expressed as proofs of knowledge of a preimage under a group homomorphism, a single abstraction that unifies Schnorr, DLEQ, and Pedersen-style proofs behind one interface.
 
 --- middle
 
@@ -96,12 +102,22 @@ This document describes interactive Sigma Protocols, a class of secure, general-
 
 Any Sigma Protocol must define three objects: a *commitment* (computed by the prover), a *challenge* (computed by the verifier), and a *response* (computed by the prover).
 
+Every Sigma Protocol in this document is an instance of one protocol: a proof of knowledge of the **preimage of a group homomorphism**. A proof is fully specified by five objects, described in {{statements}}:
+
+- the **public parameters**: fixed values (such as group generators) shared by everyone and identical across all proofs of the same kind;
+- the **witness** `w`: the secret preimage the prover knows;
+- the **instance** `X`: the public statement being proven, which may vary from one proof to the next;
+- the **homomorphism** `psi`: a group homomorphism mapping the witness to the group;
+- the **image function** `f`: a function mapping the instance to the target that `psi` must reach.
+
+The relation being proven is `psi(w) == f(X)`. To define a new Sigma proof, a developer specifies these five objects and nothing else; no protocol code, allocation of variables, or constraint-builder calls are required.
+
 ## Core interface
 
 The public functions are obtained relying on an internal structure containing the definition of a Sigma Protocol.
 
     class SigmaProtocol:
-       def new(instance) -> SigmaProtocol
+       def new(statement) -> SigmaProtocol
        def prover_commit(self, witness, rng) -> (commitment, prover_state)
        def prover_response(self, prover_state, challenge) -> response
        def verifier(self, commitment, challenge, response) -> bool
@@ -116,7 +132,7 @@ The public functions are obtained relying on an internal structure containing th
 
 Where:
 
-- `new(instance) -> SigmaProtocol`, denoting the initialization function. This function takes as input an instance generated via a `LinearRelation`, the public information shared between prover and verifier.
+- `new(statement) -> SigmaProtocol`, denoting the initialization function. This function takes as input a `statement` (see {{statements}}), the public information shared between prover and verifier. A statement bundles the homomorphism `psi` together with the image `f(X)` derived from the instance.
 
 - `prover_commit(self, witness: Witness, rng) -> (commitment, prover_state)`, denoting the **commitment phase**, that is, the computation of the first message sent by the prover in a Sigma Protocol. This method outputs a new commitment together with its associated prover state, depending on the witness known to the prover, the statement to be proven, and a random number generator `rng`. This step generally requires access to a high-quality entropy source to perform the commitment. Leakage of even just a few bits of the commitment could allow for the complete recovery of the witness. The commitment is meant to be shared, while `prover_state` must be kept secret.
 
@@ -158,8 +174,10 @@ Traditionally, Sigma Protocols are defined in Camenisch-Stadler {{CS97}} notatio
 
 In the above, line 1 declares that the proof name is "DLEQ", the public information (the **instance**) consists of the group elements `(G, X, H, Y)` denoted in upper-case.
 Line 2 states that the private information (the **witness**) consists of the scalar `x`.
-Finally, line 3 states that the linear relation that needs to be proven is
+Finally, line 3 states that the relation that needs to be proven is
 `x * G  = X` and `x * H = Y`.
+
+Read in the homomorphism framework of this document, the equations of line 3 say that the map `psi(x) = (x * G, x * H)` sends the witness `x` to the instance `(X, Y)`. The prover shows knowledge of a preimage of `(X, Y)` under `psi`. Every example in this document follows the same pattern.
 
 ## Group abstraction {#group-abstraction}
 
@@ -192,11 +210,17 @@ In this spec, instead of `add` we will use `+` with infix notation; instead of `
 
 In this spec, instead of `add` we will use `+` with infix notation; instead of `equal` we will use `==`, and instead of `mul` we will use `*`. A similar behavior can be achieved using operator overloading.
 
-## Proofs of preimage of a linear map
+## Proofs of preimage of a group homomorphism
+
+All Sigma protocols in this document are instances of a single protocol: a proof of knowledge of the **preimage of a group homomorphism** {{Maurer09}}. This framework, and the specialization to linear relations over prime-order groups used below, is presented in Sections 19.5.3 and 19.5.4 of {{BonehS23}}. Let `H1` and `H2` be two abelian groups of known order and let `psi: H1 -> H2` be a group homomorphism (that is, `psi(a + b) == psi(a) + psi(b)` for all `a, b` in `H1`). Given a target `image` in `H2`, the protocol lets a prover convince a verifier that it knows a witness `w` in `H1` such that `psi(w) == image`, without revealing anything else about `w`.
+
+For prime-order groups, `H1` is the set of witnesses `[Scalar; num_scalars]` under component-wise addition, and `H2` is the set of images `[Group; num_images]` under component-wise addition. The homomorphism `psi` is then a linear map from scalars to group elements (see {{morphism}}), and Schnorr, DLEQ, and Pedersen proofs differ only in the choice of `psi` and `image` (see the examples below).
+
+The `image` is not supplied directly: it is computed from the instance `X` by a function `f`, as `image = f(X)`. Keeping `f` separate from `psi` cleanly divides the fixed structure of the proof (`psi`, built only from public parameters) from the values a malicious prover might try to choose or alter after the fact (the instance `X`). It also makes explicit that the challenge must be bound to the instance `X`, the input of `f`, and never to the image `f(X)`, which need not determine `X` uniquely (see {{security-considerations}}).
 
 ### Core protocol
 
-This defines the object `SchnorrProof`. The initialization function takes as input the statement, and pre-processes it.
+This defines the object `SchnorrProof`. The initialization function `new(statement)` takes as input the statement of {{statements}} and pre-processes it.
 
 ### Prover procedures
 
@@ -214,13 +238,13 @@ The prover of a Sigma Protocol is stateful and will send two messages, a "commit
     Outputs:
 
     - A (private) prover state, holding the information of the interactive prover necessary for producing the protocol response
-    - A (public) commitment message, an element of the linear map image, that is, a vector of group elements.
+    - A (public) commitment message, an element of the homomorphism's codomain, that is, a vector of group elements.
 
     Procedure:
 
-    1. nonces = [self.instance.Domain.random(rng) for _ in range(self.instance.linear_map.num_scalars)]
+    1. nonces = [self.statement.Group.ScalarField.random(rng) for _ in range(self.statement.num_scalars)]
     2. prover_state = self.ProverState(witness, nonces)
-    3. commitment = self.instance.linear_map(nonces)
+    3. commitment = self.statement.psi(nonces)
     4. return (prover_state, commitment)
 
 #### Prover response
@@ -239,7 +263,7 @@ The prover of a Sigma Protocol is stateful and will send two messages, a "commit
     Procedure:
 
     1. witness, nonces = prover_state
-    2. return [nonces[i] + witness[i] * challenge for i in range(self.instance.linear_map.num_scalars)]
+    2. return [nonces[i] + witness[i] * challenge for i in range(self.statement.num_scalars)]
 
 ### Verifier
 
@@ -258,180 +282,118 @@ The prover of a Sigma Protocol is stateful and will send two messages, a "commit
 
     Procedure:
 
-    1. assert len(commitment) == self.instance.linear_map.num_constraints and len(response) == self.instance.linear_map.num_scalars
-    2. expected = self.instance.linear_map(response)
-    3. got = [commitment[i] + self.instance.image[i] * challenge for i in range(self.instance.linear_map.num_constraints)]
+    1. assert len(commitment) == self.statement.num_images and len(response) == self.statement.num_scalars
+    2. expected = self.statement.psi(response)
+    3. got = [commitment[i] + self.statement.image[i] * challenge for i in range(self.statement.num_images)]
     4. return got == expected
 
-### Witness representation {#witness}
+Here `self.statement.image` is the value `f(X)` computed from the instance when the statement was built (see {{statements}}).
 
-A witness is simply represented as a list of scalar elements of size `num_scalars`.
+### Witness {#witness}
+
+A witness is simply the preimage under `psi`, represented as a list of scalar elements of size `num_scalars`.
 
     Witness = [Scalar; num_scalars]
 
-### Linear map {#linear-map}
+### Homomorphism {#morphism}
 
-A `LinearMap` represents a function (a _linear map_ from the scalar field to the elliptic curve group) that, given as input an array of `Scalar` elements, outputs an array of `Group` elements. This can be represented as matrix-vector (scalar) product using group multi-scalar multiplication. However, since the matrix is oftentimes sparse, it is often more convenient to store the matrix in Yale sparse matrix format.
+The homomorphism `psi` is a function from `[Scalar; num_scalars]` to `[Group; num_images]`. It is not serialized or given any canonical encoding by this document; it is simply the function the prover and verifier evaluate. It MUST be a group homomorphism in the witness, that is `psi(a + b) == psi(a) + psi(b)` for all witnesses `a`, `b`.
 
-Here is an example:
+Over prime-order groups, this means each of the `num_images` outputs is a linear combination of the witness scalars, with group-element coefficients drawn from the public parameters and the instance. For example, a `psi` taking a witness `[x, r]` to a single group element `x * G + r * H` is written directly as:
 
-    class LinearCombination:
-        scalar_indices: list[int]
-        element_indices: list[int]
+    def psi(witness):
+        x, r = witness
+        return [x * G + r * H]
 
-The linear map can then be presented as:
+where `G` and `H` are the group elements it closes over. The number of witness scalars `num_scalars` cannot be recovered by evaluating `psi`, so it is recorded alongside it in the statement; every other dimension follows from evaluation.
 
-    class LinearMap:
+### Statement {#statements}
+
+A **statement** is the public description of what is being proven. It carries the two functions `psi` and `f`, the instance, and the witness length.
+
+    class Statement:
         Group: groups.Group
-        linear_combinations: list[LinearCombination]
-        group_elements: list[Group]
         num_scalars: int
-        num_elements: int
+        psi                           # function: [Scalar; num_scalars] -> [Group; num_images]
+        f                             # function: instance -> [Group; num_images]
+        instance: list[Group]         # the public statement X
 
-        def map(self, scalars: list[Group.ScalarField]) -> Group
+        @property
+        def image(self):
+            return self.f(self.instance)
 
-#### Initialization
+        @property
+        def num_images(self):
+            return len(self.image)
 
-The linear map `LinearMap` is initialized with
+The relation proven by the statement is
 
-    linear_combinations = []
-    group_elements = []
-    num_scalars = 0
-    num_elements = 0
+    psi(witness) == f(instance)
 
-#### Linear map evaluation
+To define a Sigma proof, a developer specifies five objects, in plain form, without any allocation or builder calls:
 
-A witness can be mapped to a vector of group elements via:
+1. the **public parameters**: the fixed group elements (and scalars) that `psi` uses as coefficients, such as generators;
+2. the **witness**: a list of `num_scalars` scalars, the secret preimage;
+3. the **instance**: a list of group elements, the public statement `X`;
+4. the **homomorphism** `psi`: a function of the witness, using only the public parameters and the instance;
+5. the **image function** `f`: a function of the instance, returning `[Group; num_images]`.
 
-    map(self, scalars: [Scalar; num_scalars])
-
-    Inputs:
-
-    - self, the current state of the constraint system
-    - witness,
-
-    1. image = []
-    2. for linear_combination in self.linear_combinations:
-    3.     coefficients = [scalars[i] for i in linear_combination.scalar_indices]
-    4.     elements = [self.group_elements[i] for i in linear_combination.element_indices]
-    5.     image.append(self.Group.msm(coefficients, elements))
-    6. return image
-
-### Statements for linear relations
-
-The object `LinearRelation` has two attributes: a linear map `linear_map`, which will be defined in {{linear-map}}, and `image`, the linear map image of which the prover wants to show the pre-image of.
-
-    class LinearRelation:
-        Domain = group.ScalarField
-        Image = group.Group
-
-        linear_map = LinearMap
-        image = list[group.Group]
-
-    def allocate_scalars(self, n: int) -> list[int]
-    def allocate_elements(self, n: int) -> list[int]
-    def append_equation(self, lhs: int, rhs: list[(int, int)]) -> None
-    def set_elements(self, elements: list[(int, Group)]) -> None
-
-#### Element and scalar variables allocation
-
-Two functions allow to allocate the new scalars (the witness) and group elements (the instance).
-
-    allocate_scalars(self, n)
-
-    Inputs:
-        - self, the current state of the LinearRelation
-        - n, the number of scalars to allocate
-    Outputs:
-        - indices, a list of integers each pointing to the new allocated scalars
-
-    Procedure:
-
-    1. indices = range(self.num_scalars, self.num_scalars + n)
-    2. self.num_scalars += n
-    3. return indices
-
-and below the allocation of group elements
-
-    allocate_elements(self, n)
-
-    1. linear_combination = LinearMap.LinearCombination(scalar_indices=[x[0] for x in rhs], element_indices=[x[1] for x in rhs])
-    2. self.linear_map.append(linear_combination)
-    3. self._image.append(lhs)
-
-Group elements, being part of the instance, can later be set using the function `set_elements`
-
-    set_elements(self, elements)
-
-    Inputs:
-        - self, the current state of the LinearRelation
-        - elements, a list of pairs of indices and group elements to be set
-
-    Procedure:
-
-    1. for index, element in elements:
-    2.   self.linear_map.group_elements[index] = element
-
-#### Constraint enforcing
-
-    append_equation(self, lhs, rhs)
-
-    Inputs:
-
-    - self, the current state of the constraint system
-    - lhs, the left-hand side of the equation
-    - rhs, the right-hand side of the equation (a list of (ScalarIndex, GroupEltIndex) pairs)
-
-    Outputs:
-
-    - An Equation instance that enforces the desired relation
-
-    Procedure:
-
-    1. linear_combination = LinearMap.LinearCombination(scalar_indices=[x[0] for x in rhs], element_indices=[x[1] for x in rhs])
-    2. self.linear_map.append(linear_combination)
-    3. self._image.append(lhs)
+In most protocols the instance is already the image, so `f` is the identity function. `f` becomes non-trivial when the value that `psi` must reach is a public function of several instance elements (see {{security-considerations}} for the requirements `psi` and `f` must satisfy).
 
 ### Example: Schnorr proofs
 
-The statement represented in {{sigma-protocol-group}} can be written as:
+The Schnorr proof of knowledge of a discrete logarithm,
 
-    statement = LinearRelation(group)
-    [var_x] = statement.allocate_scalars(1)
-    [var_G, var_X] = statement.allocate_elements(2)
-    statement.append_equation(var_X, [(var_x, var_G)])
+    Schnorr(G, X) = PoK{(x): X = x * G}
 
-At which point it is possible to set `var_G` and `var_X` whenever the group elements are at disposal.
+is specified as:
 
-    G = group.generator()
-    statement.set_elements([(var_G, G), (var_X, X)])
+- public parameters: `G`, a generator;
+- witness: `[x]`;
+- instance: `[X]`;
+- homomorphism: `psi([x]) = [x * G]`;
+- image function: `f([X]) = [X]` (the identity).
 
-It is worth noting that in the above example, `[X] == statement.linear_map.map([x])`.
+Concretely, once `G` and `X` are available:
+
+    def psi(witness):
+        [x] = witness
+        return [x * G]
+
+    statement = Statement(Group, num_scalars=1, psi=psi,
+                          f=lambda instance: instance, instance=[X])
+
+It is worth noting that in the above example `[X] == psi([x])`.
 
 ### Example: DLEQ proofs
 
-A DLEQ proof proves a statement:
+A DLEQ proof proves equality of discrete logarithms,
 
-        DLEQ(G, H, X, Y) = PoK{(x): X = x * G, Y = x * H}
+    DLEQ(G, H, X, Y) = PoK{(x): X = x * G, Y = x * H}
 
-Given group elements `G`, `H` and `X`, `Y` such that `x * G = X` and `x * H = Y`, then the statement is generated as:
+Given group elements `G`, `H` and `X`, `Y` such that `X = x * G` and `Y = x * H`, the statement is:
 
-    1. statement = LinearRelation()
-    2. [var_x] = statement.allocate_scalars(1)
-    3. statement.append_equation(X, [(var_x, G)])
-    4. statement.append_equation(Y, [(var_x, H)])
+- public parameters: `G`, `H`;
+- witness: `[x]`;
+- instance: `[X, Y]`;
+- homomorphism: `psi([x]) = [x * G, x * H]`;
+- image function: `f([X, Y]) = [X, Y]` (the identity).
+
+The single witness scalar `x` appears in both output components, which is exactly what forces the two discrete logarithms to be equal.
 
 ### Example: Pedersen commitments
 
-A representation proof proves a statement
+A representation (Pedersen opening) proof proves knowledge of the opening of a commitment,
 
-        REPR(G, H, C) = PoK{(x, r): C = x * G + r * H}
+    REPR(G, H, C) = PoK{(x, r): C = x * G + r * H}
 
-Given group elements `G`, `H` such that `C = x * G + r * H`, then the statement is generated as:
+Given generators `G`, `H` and a commitment `C = x * G + r * H`, the statement is:
 
-    statement = LinearRelation()
-    var_x, var_r = statement.allocate_scalars(2)
-    statement.append_equation(C, [(var_x, G), (var_r, H)])
+- public parameters: `G`, `H`;
+- witness: `[x, r]`;
+- instance: `[C]`;
+- homomorphism: `psi([x, r]) = [x * G + r * H]`;
+- image function: `f([C]) = [C]` (the identity).
 
 ## Ciphersuites {#ciphersuites}
 
@@ -450,7 +412,7 @@ This ciphersuite uses P-256 {{SP800}} for the Group.
 - `serialize(s)`: Relies on the Field-Element-to-Octet-String conversion according to {{SEC1}}; `Ns = 32`.
 - `deserialize(buf)`: Reads the byte array `buf` in chunks of 32 bytes using Octet-String-to-Field-Element from {{SEC1}}. This function can fail if the input does not represent a Scalar in the range `[0, G.Order() - 1]`.
 
-# Security Considerations
+# Security Considerations {#security-considerations}
 
 Sigma Protocols are special sound and honest-verifier zero-knowledge. These proofs are deniable (without transferable message authenticity).
 
@@ -461,6 +423,20 @@ We focus on the security guarantees of the non-interactive Fiat-Shamir transform
 - **Zero-knowledge**: The proof string produced by the `prove` function does not reveal any information beyond what can be directly inferred from the statement itself. This ensures that verifiers gain no knowledge about the witness.
 
 While theoretical analysis demonstrates that both soundness and zero-knowledge properties are statistical in nature, practical security depends on the cryptographic strength of the underlying hash function, which is defined by the Fiat-Shamir transformation. It's important to note that the soundness of a zero-knowledge proof provides no guarantees regarding the computational hardness of the relation being proven. An assessment of the specific hardness properties for relations proven using these protocols falls outside the scope of this document.
+
+## Requirements for defining a statement {#statement-requirements}
+
+A Sigma proof defined as in {{statements}} is only as sound and zero-knowledge as its five objects allow. Implementers and auditors MUST verify the following before deploying a new statement.
+
+- **The homomorphism `psi` MUST be a group homomorphism in the witness.** It may depend only on the public parameters, the witness, and the instance. The construction of {{morphism}} guarantees this for any `psi` built as a linear combination of witness scalars with public group-element coefficients; a `psi` defined by any other means MUST be checked to satisfy `psi(a + b) == psi(a) + psi(b)`.
+
+- **The image function `f` MUST depend only on the public parameters and the instance, never on the witness.** A dependence on the witness would let the target `f(X)` leak secret information or break soundness.
+
+- **Public parameters MUST NOT contain values that a malicious prover can choose or change after observing a proof.** Any such value belongs in the instance, so that it is bound by the challenge. Placing a prover-influenced value among the public parameters (for example, a generator the prover may re-select) breaks soundness.
+
+- **The instance MUST NOT contain private values.** Anything secret belongs in the witness; the instance is public and revealed to the verifier.
+
+- **The challenge MUST be bound to the instance `X`, the input of `f`, and never to the image `f(X)`.** Since `f` need not be injective, two distinct instances `X != X'` may satisfy `f(X) == f(X')`. If only the image were bound, a malicious prover could produce a proof for `X` and later present it as a proof for a different instance `X'` with the same image. Binding the instance itself closes this substitution. The Fiat-Shamir transformation {{fiat-shamir}} MUST therefore absorb the instance, together with the public parameters and the homomorphism `psi`, when deriving the challenge.
 
 ## Privacy Considerations
 
