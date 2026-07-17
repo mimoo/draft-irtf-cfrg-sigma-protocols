@@ -333,6 +333,22 @@ The object `LinearRelation` has two attributes: a linear map `linear_map`, which
     def append_equation(self, lhs: int, rhs: list[(int, int)]) -> None
     def set_elements(self, elements: list[(int, Group)]) -> None
 
+### Batch verification for linear relation checks
+
+The verifier algorithm specified in {{sigma-protocol-group}} performs each verification equation independently. Implementations MAY batch these checks into a single multi-scalar multiplication by taking a random linear combination of a chosen collection of per-equation checks with powers of a fresh batch challenge. This is a verifier-side optimization and does not change the proof string.
+
+The batch verification is used when the verifier has multiple verification equations and want to improve verification performance, include equations from rows of a single linear-relation proof, checks from a compound or disjunctive proof, or equations from multiple independently produced proof transcripts, with assumption that all equations are interpreted in the same algebraic setting.
+
+In the interactive setting, the batch challenge is sampled locally by the verifier after receiving the full proof, and batch verification does not affect soundness: the prover cannot adapt to a value sampled after its last message.
+
+Batch verification is OPTIONAL. Implementations SHOULD perform each `V_i` independently by default. Independent verification eliminates an entire class of challenge-derivation errors at the cost of verifier performance only. For most applications the unbatched verifier is preferable, and the performance gap is small in absolute terms.
+
+If batch verification is required, the batch challenge `beta` SHOULD be sampled from true randomness local to the verifier. A verifier-sampled `beta` is sufficient for soundness regardless of what the prover sent, because the prover cannot predict it.
+
+If batch verification must be deterministic, see {{fiat-shamir}} for the required Fiat-Shamir challenge-derivation discipline.
+
+This section specifies verifier-side batch verification only; pre-batching instances before proving changes the statement being proven and is a separate construction.
+
 #### Element and scalar variables allocation
 
 Two functions allow to allocate the new scalars (the witness) and group elements (the instance).
